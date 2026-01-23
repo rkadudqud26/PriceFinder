@@ -5,7 +5,7 @@ import time
 from io import BytesIO
 
 # ==========================================
-# [1] 페이지 기본 설정 (무조건 코드 맨 윗줄에 1번만 나와야 함)
+# [1] 페이지 기본 설정
 # ==========================================
 st.set_page_config(
     page_title="서주사이언티픽 최저가 검색 시스템",
@@ -17,25 +17,20 @@ st.set_page_config(
 # [2] 보안(로그인) 기능
 # ==========================================
 def check_password():
-    """비밀번호가 맞으면 True, 아니면 False 반환"""
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
 
     if st.session_state["password_correct"]:
         return True
 
-    # 로그인 화면 디자인
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.write("")
-        st.write("")
         st.markdown("### 🧬 서주사이언티픽 최저가 검색 시스템")
         st.info("인가된 연구원만 접속할 수 있습니다.")
-        
         password = st.text_input("접속 코드를 입력하세요", type="password")
         
         if st.button("시스템 접속"):
-            # st.secrets에 저장된 비밀번호와 비교
             if password == st.secrets["access_code"]:
                 st.session_state["password_correct"] = True
                 st.rerun()
@@ -44,22 +39,20 @@ def check_password():
     return False
 
 if not check_password():
-    st.stop()  # 비밀번호 틀리면 여기서 멈춤
+    st.stop()
 
 # ==========================================
-# 👇 여기부터 메인 기능 (로그인 성공 시 실행)
+# 👇 메인 기능 시작
 # ==========================================
 
-# [사용자 설정] 네이버 API 키
-CLIENT_ID = "SWML8CniVRJyDPKSeIkt"
-CLIENT_SECRET = "C_U15jOct2"
+CLIENT_ID = "SWML8CniVRJyDPKSeIkt"     # 본인 키 확인
+CLIENT_SECRET = "C_U15jOct2"           # 본인 키 확인
 
-# 기능 함수 정의
 def get_naver_price(keyword):
     """ 네이버 쇼핑 API 검색 """
     url = "https://openapi.naver.com/v1/search/shop.json"
     headers = {"X-Naver-Client-Id": CLIENT_ID, "X-Naver-Client-Secret": CLIENT_SECRET}
-    params = {"query": keyword, "display": 1, "sort": "asc"}
+    params = {"query": keyword, "display": 1, "sort": "asc"} # 정확도순이 아닌 '가격오름차순(asc)'
     
     try:
         response = requests.get(url, headers=headers, params=params)
@@ -78,95 +71,116 @@ def get_naver_price(keyword):
     except Exception as e:
         return f"통신에러:{str(e)}", 0, ""
 
-# 화면 구성
-st.title("🔎 MRO 품목 최저가 검색")
-st.markdown("---")
+# -----------------------------------------------------------
+# [핵심] 스마트 컬럼 감지 함수
+# -----------------------------------------------------------
+def find_column(columns, keywords):
+    """주어진 키워드 리스트 중 하나라도 포함된 컬럼명을 찾아 반환"""
+    for col in columns:
+        col_str = str(col).replace(" ", "").lower() # 공백제거, 소문자 변환 후 비교
+        for key in keywords:
+            if key in col_str:
+                return col
+    return None
 
+# UI 구성
+st.title("🔎 스마트 최저가 검색 (정밀검색 버전)")
+st.markdown("---")
 st.markdown("""
-**사용 방법:**
-1. 엑셀 파일을 업로드합니다.
-2. **'상품명'**과 **'규격'** 컬럼이 있는지 확인합니다. (없으면 자동으로 C, D열을 읽습니다)
-3. [검색 시작] 버튼을 누릅니다.
+**💡 업그레이드된 기능:**
+* **'제조사', '모델명', '상품명', '규격'**을 자동으로 찾아 조합합니다.
+* 정보가 많을수록 더 정확한 최저가를 찾아냅니다.
 """)
 
 uploaded_file = st.file_uploader("엑셀 파일 업로드 (.xlsx)", type=['xlsx'])
 
 if uploaded_file:
     try:
-        # 엑셀 읽기 (openpyxl 필요)
         df = pd.read_excel(uploaded_file, engine='openpyxl')
         
-        st.write("📂 **업로드된 데이터 확인 (상위 5개)**")
-        st.dataframe(df.head())
+        st.write("📂 **데이터 미리보기**")
+        st.dataframe(df.head(3))
         
-        col_count = len(df)
-        st.info(f"총 {col_count}개의 품목을 찾았습니다.")
-
-        # 컬럼 찾기 로직
-        name_col = None
-        spec_col = None
-
-        for col in df.columns:
-            if "상품명" in str(col) or "품목명" in str(col):
-                name_col = col
-            if "규격" in str(col):
-                spec_col = col
+        # -------------------------------------------------------
+        # 🧠 스마트 컬럼 매핑 로직
+        # -------------------------------------------------------
+        st.subheader("🛠️ 검색 조건 자동 설정")
+        cols = df.columns
         
-        if name_col is None: name_col = df.columns[2] # C열
-        if spec_col is None: spec_col = df.columns[3] # D열
+        # 1. 각 정보를 담고 있을 법한 컬럼 찾기
+        col_maker = find_column(cols, ['제조사', '브랜드', '메이커', 'brand', 'maker'])
+        col_model = find_column(cols, ['모델', '모델명', 'model', 'cat', 'no'])
+        col_name = find_column(cols, ['상품명', '품목명', '품명', 'description', 'name'])
+        col_spec = find_column(cols, ['규격', '사양', 'size', 'spec'])
+        
+        # 상품명은 필수! 못 찾으면 강제로 지정
+        if col_name is None: 
+            col_name = cols[0] # 첫 번째 열을 상품명으로 가정
 
-        st.success(f"✅ 검색 기준: **'{name_col}'** + **'{spec_col}'**")
+        # 매핑 결과 보여주기
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("제조사 열", col_maker if col_maker else "(없음)")
+        c2.metric("모델명 열", col_model if col_model else "(없음)")
+        c3.metric("상품명 열", col_name)
+        c4.metric("규격 열", col_spec if col_spec else "(없음)")
 
-        if st.button("🚀 최저가 검색 시작 (Click!)", type="primary"):
+        st.caption(f"👉 조합된 검색어 예시: **[{col_maker}] [{col_model}] [{col_name}] [{col_spec}]**")
+        # -------------------------------------------------------
+
+        if st.button("🚀 정밀 검색 시작", type="primary"):
             
-            res_titles, res_prices, res_links = [], [], []
+            res_titles, res_prices, res_links, res_keywords = [], [], [], []
             
             progress_bar = st.progress(0)
             status_text = st.empty()
+            total = len(df)
             
             for i, row in df.iterrows():
-                p_name = str(row[name_col])
-                p_spec = str(row[spec_col])
+                # 검색어 조합하기 (값이 있는 것만 합침)
+                keywords = []
                 
-                if p_name == 'nan': p_name = ""
-                if p_spec == 'nan': p_spec = ""
+                if col_maker and str(row[col_maker]) != 'nan': keywords.append(str(row[col_maker]))
+                if col_model and str(row[col_model]) != 'nan': keywords.append(str(row[col_model]))
+                if col_name  and str(row[col_name])  != 'nan': keywords.append(str(row[col_name]))
+                if col_spec  and str(row[col_spec])  != 'nan': keywords.append(str(row[col_spec]))
                 
-                search_key = f"{p_name} {p_spec}"
+                full_keyword = " ".join(keywords) # 띄어쓰기로 연결
                 
-                status_text.text(f"[{i+1}/{col_count}] 검색 중... {search_key}")
+                status_text.text(f"[{i+1}/{total}] 검색 중: {full_keyword}")
                 
-                title, price, link = get_naver_price(search_key)
+                # 네이버 검색 실행
+                title, price, link = get_naver_price(full_keyword)
                 
                 res_titles.append(title)
                 res_prices.append(price)
                 res_links.append(link)
+                res_keywords.append(full_keyword) # 실제로 검색한 단어도 기록
                 
-                progress_bar.progress((i + 1) / col_count)
-                time.sleep(0.3) 
+                progress_bar.progress((i + 1) / total)
+                time.sleep(0.2) # API 보호용 딜레이
             
+            # 결과 정리
+            df['실제검색어'] = res_keywords
             df['네이버상품명'] = res_titles
             df['최저가'] = res_prices
             df['링크'] = res_links
             
-            status_text.success("✅ 검색 완료! 결과를 확인하고 다운로드하세요.")
+            status_text.success("✅ 검색 완료!")
             st.dataframe(df)
             
-            # 엑셀 다운로드 로직
+            # 다운로드
             def convert_df(df):
                 output = BytesIO()
-                # 여기서도 engine='openpyxl'이 사용됩니다
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     df.to_excel(writer, index=False)
                 return output.getvalue()
 
-            csv = convert_df(df)
-
             st.download_button(
-                label="📥 검색 결과 엑셀 다운로드",
-                data=csv,
-                file_name='최저가_검색결과.xlsx',
+                label="📥 결과 다운로드",
+                data=convert_df(df),
+                file_name='정밀검색결과.xlsx',
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             )
 
     except Exception as e:
-        st.error(f"오류가 발생했습니다: {e}")
+        st.error(f"오류 발생: {e}")
