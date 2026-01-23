@@ -1,4 +1,53 @@
 import streamlit as st
+
+# [1] 페이지 기본 설정 (가장 윗줄에 있어야 함)
+st.set_page_config(
+    page_title="서주사이언티픽 최저가 검색 시스템",
+    page_icon="🧬",
+    layout="wide"
+)
+
+# [2] 비밀번호 체크 함수 (보안 게이트)
+def check_password():
+    """비밀번호가 맞으면 True, 아니면 False 반환"""
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+
+    if st.session_state["password_correct"]:
+        return True
+
+    # 로그인 화면 디자인
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.write("")
+        st.write("")
+        st.markdown("### 🧬 서주사이언티픽 최저가 검색 시스템")
+        st.info("인가된 연구원만 접속할 수 있습니다.")
+        
+        password = st.text_input("접속 코드를 입력하세요", type="password")
+        
+        if st.button("시스템 접속"):
+            # st.secrets에 저장된 비밀번호와 비교
+            if password == st.secrets["access_code"]:
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("⛔ 승인되지 않은 코드입니다.")
+    return False
+
+# [3] 보안 적용: 비밀번호 틀리면 여기서 코드 중단
+if not check_password():
+    st.stop()
+
+# ==========================================
+# 👇 여기 아래부터 기존에 만드신 최저가 검색 코드가 시작되면 됩니다.
+# ==========================================
+
+st.title("🔎 MRO 품목 최저가 검색")
+st.markdown("---")
+# (이하 기존 코드...)
+
+import streamlit as st
 import pandas as pd
 import requests
 import time
@@ -15,7 +64,7 @@ CLIENT_SECRET = "C_U15jOct2"
 # ------------------------------------------------------------------
 st.set_page_config(page_title="최저가 검색기", page_icon="🔍", layout="wide")
 
-st.title("🛒 입찰 물품 최저가 자동 검색기")
+st.title("🛒 물품 최저가 자동 검색기")
 st.markdown("""
 **사용 방법:**
 1. 엑셀 파일을 업로드합니다. (파일명은 상관없음)
@@ -144,4 +193,5 @@ if uploaded_file:
             )
 
     except Exception as e:
+
         st.error(f"오류가 발생했습니다: {e}")
