@@ -37,25 +37,58 @@ def check_password():
 if not check_password():
     st.stop()
 
+import re # 정규표현식 라이브러리 추가 (맨 위에 있어야 함)
+
+# ... (상단 로그인 및 설정 코드는 그대로 유지) ...
+
 # ==========================================
-# [3] 핵심 검색 로직 (집요한 검색)
+# [3] 핵심 검색 로직 (노이즈 필터링 강화)
 # ==========================================
 CLIENT_ID = "SWML8CniVRJyDPKSeIkt"     # 본인 키 확인
 CLIENT_SECRET = "C_U15jOct2"           # 본인 키 확인
 
+# 🚫 검색에 방해되는 단어 리스트 (제조사 등에 포함되면 삭제)
+NOISE_WORDS = ["시중품", "자체제작", "기타", "없음", "상세기재", "협력사", "대신무역", "도매상닷컴", "주식회사", "(주)"]
+
+def clean_text(text):
+    """특수문자 제거 및 노이즈 단어 삭제"""
+    if pd.isna(text): return ""
+    text = str(text)
+    
+    # 1. 특수문자(/, _, [], (), +)를 공백으로 치환
+    text = re.sub(r"[/_\[\]\(\)\+\-\*]", " ", text)
+    
+    # 2. 노이즈 단어 제거
+    for noise in NOISE_WORDS:
+        text = text.replace(noise, "")
+        
+    return text.strip()
+
+def extract_model_code_from_name(text):
+    """상품명 등에서 '영어+숫자' 조합(모델명 패턴)만 쏙 뽑아냄"""
+    # 예: "포스트잇 N686F-2" -> "N686F-2"
+    match = re.search(r'[A-Za-z]+[-]?\d+|[A-Za-z]{2,}', str(text))
+    if match:
+        return match.group()
+    return ""
+
 def search_naver_api(query):
-    """실제 API 호출 함수"""
+    """API 호출 (기존과 동일)"""
+    # 쿼리가 너무 짧으면(1글자 이하) 실행 안 함
+    if len(query.strip()) < 2: return {'found': False}
+
     url = "https://openapi.naver.com/v1/search/shop.json"
     headers = {"X-Naver-Client-Id": CLIENT_ID, "X-Naver-Client-Secret": CLIENT_SECRET}
-    params = {"query": query, "display": 1, "sort": "asc"} # 가격 낮은순
+    params = {"query": query, "display": 1, "sort": "asc"}
     
     try:
         response = requests.get(url, headers=headers, params=params)
         if response.status_code == 200:
             items = response.json().get('items')
             if items:
+                title = items[0]['title'].replace('<b>', '').replace('</b>', '')
                 return {
-                    'title': items[0]['title'].replace('<b>', '').replace('</b>', ''),
+                    'title': title,
                     'price': int(items[0]['lprice']),
                     'link': items[0]['link'],
                     'found': True
@@ -65,45 +98,54 @@ def search_naver_api(query):
     return {'found': False}
 
 def smart_search_logic(row, cols_map):
-    """
-    행(Row) 데이터를 받아서 3단계로 검색을 시도함
-    """
-    # 1. 데이터 가져오기 (없으면 빈칸 처리)
-    name = str(row[cols_map['name']]) if not pd.isna(row[cols_map['name']]) else ""
-    spec = str(row[cols_map['spec']]) if not pd.isna(row[cols_map['spec']]) else ""
-    maker = str(row[cols_map['maker']]) if cols_map['maker'] != "없음" and not pd.isna(row[cols_map['maker']]) else ""
-    model = str(row[cols_map['model']]) if cols_map['model'] != "없음" and not pd.isna(row[cols_map['model']]) else ""
+    # 1. 데이터 가져오기 및 클리닝
+    raw_name = str(row[cols_map['name']])
+    raw_spec = str(row[cols_map['spec']]) if not pd.isna(row[cols_map['spec']]) else ""
+    
+    name = clean_text(raw_name)
+    spec = clean_text(raw_spec)
+    maker = clean_text(str(row[cols_map['maker']])) if cols_map['maker'] != "없음" else ""
+    model = clean_text(str(row[cols_map['model']])) if cols_map['model'] != "없음" else ""
 
-    # 2. 검색 시나리오 생성 (우선순위 순서)
+    # 상품명에서 모델명스러운 것 추출 (예: N686F-2)
+    extracted_model = extract_model_code_from_name(raw_name)
+
+    # 2. 검색 시나리오 (우선순위 재조정)
     queries = []
     
-    # 전략 1: 제조사 + 모델명 (가장 정확함)
+    # [전략 1] 제조사 + 모델명 (가장 깔끔함)
     if maker and model:
         queries.append(f"{maker} {model}")
     
-    # 전략 2: 모델명 단독 (모델명이 확실하다면)
+    # [전략 2] 모델명 단독 (제조사가 '시중품'이라 지워졌을 때 유용)
     if model:
         queries.append(model)
-
-    # 전략 3: 제조사 + 상품명 + 규격 (일반적)
-    if maker:
-        queries.append(f"{maker} {name} {spec}")
         
-    # 전략 4: 상품명 + 규격 (기존 방식 - 최후의 수단)
+    # [전략 3] 추출된 모델명 (상품명에 숨어있던 모델명)
+    if extracted_model and extracted_model != model:
+        queries.append(extracted_model)
+        if maker:
+            queries.append(f"{maker} {extracted_model}")
+
+    # [전략 4] 제조사 + 상품명 (규격 제외) -> 규격에 잡다한 말이 많아서 제외하는 게 나을 때가 많음
+    if maker:
+        queries.append(f"{maker} {name}")
+    
+    # [전략 5] 상품명 + 규격 (최후의 수단)
     queries.append(f"{name} {spec}")
     
-    # 3. 순차적으로 시도
+    # 3. 순차 실행
     for q in queries:
         q = q.strip()
-        if len(q) < 2: continue # 너무 짧은 검색어는 패스
-        
+        # 검색어가 너무 길면 오히려 방해되므로 앞 4단어만 자를 수도 있음 (선택)
         result = search_naver_api(q)
         if result['found']:
-            result['used_keyword'] = q # 어떤 검색어로 성공했는지 기록
+            result['used_keyword'] = q
             return result
             
-    # 다 실패하면
     return {'title': "검색실패", 'price': 0, 'link': "", 'found': False, 'used_keyword': "실패"}
+
+# ... (이하 UI 코드는 기존과 동일하게 유지) ...
 
 # ==========================================
 # [4] 메인 UI
@@ -185,3 +227,4 @@ if uploaded_file:
             file_name="스마트검색결과.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
