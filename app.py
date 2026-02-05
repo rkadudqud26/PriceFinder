@@ -62,7 +62,7 @@ def extract_model_code_from_name(text):
 
 def search_naver_api(query, min_price, max_price, log_area):
     """
-    API 호출 함수 (타임아웃 + 디버깅 로그 추가)
+    [진단 모드] API 호출 및 상세 원인 분석
     """
     if len(query.strip()) < 2: return {'found': False}
 
@@ -71,32 +71,48 @@ def search_naver_api(query, min_price, max_price, log_area):
     params = {"query": query, "display": 30, "sort": "asc"} 
     
     try:
-        # [중요] timeout=3 설정: 3초 안에 응답 없으면 에러 발생시키고 넘어감 (무한대기 방지)
         response = requests.get(url, headers=headers, params=params, timeout=3)
         
-        if response.status_code == 200:
-            items = response.json().get('items')
-            if items:
-                for item in items:
-                    lprice = int(item['lprice'])
-                    if lprice < min_price: continue
-                    if max_price > 0 and lprice > max_price: continue
-                        
-                    title = item['title'].replace('<b>', '').replace('</b>', '')
-                    return {
-                        'title': title,
-                        'price': lprice,
-                        'link': item['link'],
-                        'found': True
-                    }
-        else:
-            # 200 OK가 아니면 에러 코드 출력
-            log_area.text(f"⚠️ API 오류: {response.status_code} (키 확인 필요)")
+        # [진단 1] 네이버가 200(정상)이 아닌 코드를 주면 에러 메시지 출력
+        if response.status_code != 200:
+            error_msg = response.json().get('errorMessage', '알 수 없는 오류')
+            error_code = response.json().get('errorCode', '')
+            log_area.error(f"⛔ 네이버 거부 ({response.status_code}): {error_code} - {error_msg}")
+            return {'found': False}
+
+        # [진단 2] 정상 응답이지만 결과가 0개인 경우
+        items = response.json().get('items')
+        if not items:
+            log_area.warning(f"📭 검색 결과 0건: '{query}' (검색어가 너무 복잡할 수 있음)")
+            return {'found': False}
+
+        # [진단 3] 결과는 있는데 가격 필터에서 다 걸러지는 경우
+        filtered_count = 0
+        for item in items:
+            lprice = int(item['lprice'])
             
+            # 가격 조건 체크
+            if lprice < min_price: 
+                continue # 너무 쌈
+            if max_price > 0 and lprice > max_price: 
+                continue # 너무 비쌈
+                
+            # 조건 통과!
+            title = item['title'].replace('<b>', '').replace('</b>', '')
+            return {
+                'title': title,
+                'price': lprice,
+                'link': item['link'],
+                'found': True
+            }
+        
+        # 여기까지 왔다면 물건은 찾았는데 가격 조건에 맞는 게 없는 것임
+        log_area.info(f"💸 가격 조건 미달: '{query}' (검색된 {len(items)}개가 모두 {min_price}원 미만이거나 조건 불일치)")
+
     except requests.exceptions.Timeout:
-        log_area.text(f"⏰ 타임아웃: '{query}' 검색 중 네이버가 응답하지 않음")
+        log_area.error(f"⏰ 타임아웃: '{query}' 응답 없음")
     except Exception as e:
-        log_area.text(f"💥 통신 에러: {e}")
+        log_area.error(f"💥 시스템 에러: {e}")
         
     return {'found': False}
 
@@ -214,3 +230,4 @@ if uploaded_file:
             st.error(f"에러 내용: {e}")
             # 에러 위치 상세 출력
             st.code(traceback.format_exc())
+
