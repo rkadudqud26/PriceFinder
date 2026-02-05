@@ -180,32 +180,46 @@ if uploaded_file:
                 'maker': maker_col if maker_col != "없음" else "없음",
                 'model': model_col if model_col != "없음" else "없음"}
 
+# [수정된 코드] 검색 버튼 로직
     if st.button("🔍 검색 시작 (가격필터 적용)", type="primary"):
         
-        results_list = []
-        progress_bar = st.progress(0)
-        status_txt = st.empty()
-        total = len(df)
+        # [안전장치 1] 에러 발생 시 화면에 표시하기 위한 try-except
+        try:
+            results_list = []
+            progress_bar = st.progress(0)
+            status_txt = st.empty()
+            total = len(df)
+            
+            # [⭐ 핵심 수정] 빈 컬럼을 미리 만들어야 에러가 안 납니다!
+            df['네이버상품명'] = ""
+            df['최저가'] = 0
+            df['링크'] = ""
+            df['성공키워드'] = ""
+            
+            for i, row in df.iterrows():
+                # 사용자가 설정한 min_val, max_val을 넘겨줌
+                res = smart_search_logic(row, cols_map, min_val, max_val)
+                
+                status_txt.text(f"[{i+1}/{total}] 검색중... {res.get('used_keyword', '')}")
+                
+                # 이제 컬럼이 존재하므로 df.at을 써도 안전합니다.
+                df.at[i, '네이버상품명'] = res['title']
+                df.at[i, '최저가'] = res['price']
+                df.at[i, '링크'] = res['link']
+                df.at[i, '성공키워드'] = res.get('used_keyword', '')
+                
+                progress_bar.progress((i + 1) / total)
+                time.sleep(0.1) 
+                
+            status_txt.success("✅ 완료! 낚시 매물이 걸러졌는지 확인해보세요.")
+            st.dataframe(df)
+            
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+                
+            st.download_button("📥 결과 다운로드", output.getvalue(), "스마트검색_가격필터.xlsx")
         
-        for i, row in df.iterrows():
-            # 사용자가 설정한 min_val, max_val을 넘겨줌
-            res = smart_search_logic(row, cols_map, min_val, max_val)
-            
-            status_txt.text(f"[{i+1}/{total}] 검색중... {res.get('used_keyword', '')}")
-            
-            df.at[i, '네이버상품명'] = res['title']
-            df.at[i, '최저가'] = res['price']
-            df.at[i, '링크'] = res['link']
-            df.at[i, '성공키워드'] = res.get('used_keyword', '')
-            
-            progress_bar.progress((i + 1) / total)
-            time.sleep(0.1) 
-            
-        status_txt.success("✅ 완료! 낚시 매물이 걸러졌는지 확인해보세요.")
-        st.dataframe(df)
-        
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
-            
-        st.download_button("📥 결과 다운로드", output.getvalue(), "스마트검색_가격필터.xlsx")
+        except Exception as e:
+            # 에러가 나면 빨간 박스로 알려줌
+            st.error(f"⛔ 오류가 발생했습니다: {e}")
