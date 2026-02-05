@@ -131,7 +131,7 @@ def smart_search_logic(row, cols_map, min_p, max_p):
     return {'title': "검색실패(범위내없음)", 'price': 0, 'link': "", 'found': False, 'used_keyword': "실패"}
 
 # ==========================================
-# [4] 메인 UI
+# [4] 메인 UI (디버깅 강화 버전)
 # ==========================================
 st.title("🛒 스마트 다중 검색 시스템 (낚시제거)")
 st.markdown("""
@@ -143,75 +143,77 @@ st.divider()
 uploaded_file = st.file_uploader("엑셀 파일 업로드", type=['xlsx'])
 
 if uploaded_file:
-    df = pd.read_excel(uploaded_file, engine='openpyxl')
-    st.write("📂 **데이터 로드 완료**")
+    # 1. 파일 읽기 시도
+    try:
+        df = pd.read_excel(uploaded_file, engine='openpyxl')
+        st.write(f"📂 **데이터 로드 완료: {len(df)}개 행**")
+    except Exception as e:
+        st.error(f"❌ 엑셀 파일을 읽는 중 에러가 났습니다: {e}")
+        st.stop()
     
-    # -----------------------------------------------------
-    # 가격 필터 설정 (사이드바 혹은 메인 상단)
-    # -----------------------------------------------------
+    # 2. 가격 필터 설정
     with st.container():
         st.subheader("💰 가격 필터 설정")
         c_min, c_max = st.columns(2)
         with c_min:
-            min_val = st.number_input(
-                "최소 가격 (원) - 이 가격 미만은 무시함", 
-                min_value=0, value=1000, step=100, 
-                help="10원, 100원짜리 낚시 매물을 피하려면 1000원 정도로 설정하세요."
-            )
+            min_val = st.number_input("최소 가격 (원)", min_value=0, value=1000, step=100)
         with c_max:
-            max_val = st.number_input(
-                "최대 가격 (원) - 0이면 제한 없음", 
-                min_value=0, value=0, step=1000,
-                help="너무 비싼 장비가 검색되는걸 막고 싶으면 설정하세요."
-            )
+            max_val = st.number_input("최대 가격 (원)", min_value=0, value=0, step=1000)
             
     st.divider()
     
-    # 컬럼 매핑
+    # 3. 컬럼 매핑
     st.info("👇 컬럼 연결")
     cols = list(df.columns)
+    
+    # 컬럼이 하나도 없으면 경고
+    if len(cols) == 0:
+        st.error("엑셀 파일에 데이터가 없거나 컬럼을 읽지 못했습니다.")
+        st.stop()
+
     c1, c2, c3, c4 = st.columns(4)
     with c1: name_col = st.selectbox("상품명", cols, index=0)
     with c2: spec_col = st.selectbox("규격", cols, index=1 if len(cols)>1 else 0)
-    with c3: maker_col = st.selectbox("제조사 (선택)", ["없음"] + cols, index=next((i for i, c in enumerate(cols) if "제조" in str(c)), 0) + 1)
-    with c4: model_col = st.selectbox("모델명 (선택)", ["없음"] + cols, index=next((i for i, c in enumerate(cols) if "모델" in str(c)), 0) + 1)
+    with c3: maker_col = st.selectbox("제조사 (선택)", ["없음"] + cols, index=0)
+    with c4: model_col = st.selectbox("모델명 (선택)", ["없음"] + cols, index=0)
         
     cols_map = {'name': name_col, 'spec': spec_col, 
                 'maker': maker_col if maker_col != "없음" else "없음",
                 'model': model_col if model_col != "없음" else "없음"}
 
-# [수정된 코드] 검색 버튼 로직
+    # 4. 검색 버튼 (디버깅 로그 추가)
     if st.button("🔍 검색 시작 (가격필터 적용)", type="primary"):
+        st.write("🔄 시스템: 검색 로직을 시작합니다... (이 메시지가 보이면 버튼은 작동한 것입니다)")
         
-        # [안전장치 1] 에러 발생 시 화면에 표시하기 위한 try-except
         try:
-            results_list = []
-            progress_bar = st.progress(0)
-            status_txt = st.empty()
-            total = len(df)
-            
-            # [⭐ 핵심 수정] 빈 컬럼을 미리 만들어야 에러가 안 납니다!
+            # 결과 담을 빈 컬럼 미리 생성 (필수!)
             df['네이버상품명'] = ""
             df['최저가'] = 0
             df['링크'] = ""
             df['성공키워드'] = ""
             
+            results_list = []
+            progress_bar = st.progress(0)
+            status_txt = st.empty()
+            total = len(df)
+            
             for i, row in df.iterrows():
-                # 사용자가 설정한 min_val, max_val을 넘겨줌
+                # 검색 로직 실행
                 res = smart_search_logic(row, cols_map, min_val, max_val)
                 
-                status_txt.text(f"[{i+1}/{total}] 검색중... {res.get('used_keyword', '')}")
+                # 상태 메시지 업데이트
+                status_txt.text(f"[{i+1}/{total}] 진행중... {res.get('used_keyword', '...')}")
                 
-                # 이제 컬럼이 존재하므로 df.at을 써도 안전합니다.
-                df.at[i, '네이버상품명'] = res['title']
-                df.at[i, '최저가'] = res['price']
-                df.at[i, '링크'] = res['link']
-                df.at[i, '성공키워드'] = res.get('used_keyword', '')
+                # 데이터프레임에 값 넣기 (안전한 방식인 loc 사용)
+                df.loc[i, '네이버상품명'] = str(res['title'])
+                df.loc[i, '최저가'] = int(res['price'])
+                df.loc[i, '링크'] = str(res['link'])
+                df.loc[i, '성공키워드'] = str(res.get('used_keyword', ''))
                 
                 progress_bar.progress((i + 1) / total)
                 time.sleep(0.1) 
                 
-            status_txt.success("✅ 완료! 낚시 매물이 걸러졌는지 확인해보세요.")
+            status_txt.success("✅ 검색 완료!")
             st.dataframe(df)
             
             output = BytesIO()
@@ -219,7 +221,10 @@ if uploaded_file:
                 df.to_excel(writer, index=False)
                 
             st.download_button("📥 결과 다운로드", output.getvalue(), "스마트검색_가격필터.xlsx")
-        
+            
         except Exception as e:
-            # 에러가 나면 빨간 박스로 알려줌
-            st.error(f"⛔ 오류가 발생했습니다: {e}")
+            # 🚨 에러 발생 시 여기서 상세 내용을 화면에 뿌려줍니다.
+            import traceback
+            st.error("⛔ 프로그램 실행 중 오류가 발생했습니다.")
+            st.code(traceback.format_exc()) # 에러의 상세 위치를 보여줌
+
