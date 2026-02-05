@@ -4,14 +4,13 @@ import requests
 import time
 import re
 from io import BytesIO
-import traceback # 에러 위치 추적용
 
 # ==========================================
-# [1] 페이지 기본 설정
+# [1] 페이지 설정
 # ==========================================
 st.set_page_config(
-    page_title="서주 최저가 검색 (디버깅모드)",
-    page_icon="🐞",
+    page_title="서주 최저가 검색 (Fast)",
+    page_icon="⚡",
     layout="wide"
 )
 
@@ -26,7 +25,7 @@ def check_password():
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.markdown("### 🐞 서주 최저가 검색 (디버깅모드)")
+        st.markdown("### ⚡ 서주 최저가 검색 (고속버전)")
         password = st.text_input("접속 코드를 입력하세요", type="password")
         if st.button("접속"):
             if password == st.secrets["access_code"]:
@@ -40,194 +39,165 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# [3] 핵심 로직 (타임아웃 및 로그 추가)
+# [3] 핵심 검색 로직 (군더더기 제거)
 # ==========================================
-CLIENT_ID = "SWML8CniVRJyDPKSeIkt"     
-CLIENT_SECRET = "C_U15jOct2"           
+CLIENT_ID = "SWML8CniVRJyDPKSeIkt"     # 본인 키 확인
+CLIENT_SECRET = "C_U15jOct2"           # 본인 키 확인
 
-NOISE_WORDS = ["시중품", "자체제작", "기타", "없음", "상세기재", "협력사", "대신무역", "도매상닷컴", "주식회사", "(주)"]
+# 검색 방해 단어 최소화
+NOISE_WORDS = ["시중품", "자체제작", "기타", "없음", "상세기재", "협력사", "(주)", "주식회사"]
 
 def clean_text(text):
     if pd.isna(text): return ""
     text = str(text)
-    text = re.sub(r"[/_\[\]\(\)\+\-\*]", " ", text)
+    # 특수문자 제거하되, 모델명에 쓰이는 하이픈(-)은 살릴 수도 있음 (여기선 안전하게 공백 처리)
+    text = re.sub(r"[/_\[\]\(\)\+\*]", " ", text)
     for noise in NOISE_WORDS:
         text = text.replace(noise, "")
     return text.strip()
 
-def extract_model_code_from_name(text):
-    match = re.search(r'[A-Za-z]+[-]?\d+|[A-Za-z]{2,}', str(text))
-    if match: return match.group()
-    return ""
-
-def search_naver_api(query, min_price, max_price, log_area):
+def search_naver_api(query, min_price, max_price):
     """
-    [진단 모드] API 호출 및 상세 원인 분석
+    API 호출: 빠르고 간결하게
     """
-    if len(query.strip()) < 2: return {'found': False}
+    if len(query) < 2: return None
 
     url = "https://openapi.naver.com/v1/search/shop.json"
     headers = {"X-Naver-Client-Id": CLIENT_ID, "X-Naver-Client-Secret": CLIENT_SECRET}
-    params = {"query": query, "display": 30, "sort": "asc"} 
+    # 낚시 제거를 위해 20개까지만 봄 (30개는 너무 느림)
+    params = {"query": query, "display": 20, "sort": "asc"} 
     
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=3)
+        # 타임아웃 2초 (빨리 포기하고 다음 거 찾는 게 나음)
+        response = requests.get(url, headers=headers, params=params, timeout=2)
         
-        # [진단 1] 네이버가 200(정상)이 아닌 코드를 주면 에러 메시지 출력
-        if response.status_code != 200:
-            error_msg = response.json().get('errorMessage', '알 수 없는 오류')
-            error_code = response.json().get('errorCode', '')
-            log_area.error(f"⛔ 네이버 거부 ({response.status_code}): {error_code} - {error_msg}")
-            return {'found': False}
+        if response.status_code == 200:
+            items = response.json().get('items')
+            if items:
+                for item in items:
+                    lprice = int(item['lprice'])
+                    
+                    # 가격 필터
+                    if lprice < min_price: continue
+                    if max_price > 0 and lprice > max_price: continue
+                        
+                    # 찾았다! (HTML 태그 제거)
+                    title = item['title'].replace('<b>', '').replace('</b>', '')
+                    return {
+                        'title': title,
+                        'price': lprice,
+                        'link': item['link'],
+                        'found': True
+                    }
+    except:
+        pass
+    return None
 
-        # [진단 2] 정상 응답이지만 결과가 0개인 경우
-        items = response.json().get('items')
-        if not items:
-            log_area.warning(f"📭 검색 결과 0건: '{query}' (검색어가 너무 복잡할 수 있음)")
-            return {'found': False}
-
-        # [진단 3] 결과는 있는데 가격 필터에서 다 걸러지는 경우
-        filtered_count = 0
-        for item in items:
-            lprice = int(item['lprice'])
-            
-            # 가격 조건 체크
-            if lprice < min_price: 
-                continue # 너무 쌈
-            if max_price > 0 and lprice > max_price: 
-                continue # 너무 비쌈
-                
-            # 조건 통과!
-            title = item['title'].replace('<b>', '').replace('</b>', '')
-            return {
-                'title': title,
-                'price': lprice,
-                'link': item['link'],
-                'found': True
-            }
-        
-        # 여기까지 왔다면 물건은 찾았는데 가격 조건에 맞는 게 없는 것임
-        log_area.info(f"💸 가격 조건 미달: '{query}' (검색된 {len(items)}개가 모두 {min_price}원 미만이거나 조건 불일치)")
-
-    except requests.exceptions.Timeout:
-        log_area.error(f"⏰ 타임아웃: '{query}' 응답 없음")
-    except Exception as e:
-        log_area.error(f"💥 시스템 에러: {e}")
-        
-    return {'found': False}
-
-def smart_search_logic(row, cols_map, min_p, max_p, log_area):
+def smart_search_logic(row, cols_map, min_p, max_p):
+    # 데이터 전처리
     raw_name = str(row[cols_map['name']])
-    raw_spec = str(row[cols_map['spec']]) if not pd.isna(row[cols_map['spec']]) else ""
-    
     name = clean_text(raw_name)
-    spec = clean_text(raw_spec)
+    spec = clean_text(str(row[cols_map['spec']])) if not pd.isna(row[cols_map['spec']]) else ""
     maker = clean_text(str(row[cols_map['maker']])) if cols_map['maker'] != "없음" else ""
     model = clean_text(str(row[cols_map['model']])) if cols_map['model'] != "없음" else ""
-    extracted_model = extract_model_code_from_name(raw_name)
 
+    # [전략 수정] 가장 확률 높은 순서대로 딱 3번만 시도 (속도 향상)
     queries = []
-    if maker and model: queries.append(f"{maker} {model}")
-    if model: queries.append(model)
-    if extracted_model and extracted_model != model:
-        queries.append(extracted_model)
+    
+    # 1순위: 제조사 + 모델명 (가장 정확)
+    if maker and model: 
+        queries.append(f"{maker} {model}")
+    
+    # 2순위: 모델명 단독 (모델명이 확실하다면 제조사 없어도 나옴)
+    if model:
+        queries.append(model)
+        
+    # 3순위: 제조사 + 상품명 (규격은 너무 길어서 오히려 방해될 때가 많음)
+    if maker:
+        queries.append(f"{maker} {name}")
+    
+    # 4순위: 상품명 + 규격 (최후의 수단)
     queries.append(f"{name} {spec}")
     
+    # 순차 실행 (찾으면 바로 종료 -> 속도 향상)
     for q in queries:
-        q = q.strip()
-        result = search_naver_api(q, min_p, max_p, log_area)
-        if result['found']:
+        result = search_naver_api(q.strip(), min_p, max_p)
+        if result:
             result['used_keyword'] = q
             return result
             
-    return {'title': "검색실패", 'price': 0, 'link': "", 'found': False, 'used_keyword': "실패"}
+    return {'title': "검색실패", 'price': 0, 'link': "", 'found': False, 'used_keyword': ""}
 
 # ==========================================
 # [4] 메인 UI
 # ==========================================
-st.title("🐞 검색 시스템 (디버깅 모드)")
-st.info("실행이 멈추는지 확인하기 위해 진행 상황을 실시간으로 표시합니다.")
+st.title("🛒 최저가 검색 (Fast & Smart)")
+st.caption("속도와 정확도 위주로 최적화되었습니다.")
 
 uploaded_file = st.file_uploader("엑셀 파일 업로드", type=['xlsx'])
 
 if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file, engine='openpyxl')
-        st.write(f"📂 데이터 로드 완료: {len(df)}행")
-    except Exception as e:
-        st.error(f"파일 읽기 실패: {e}")
+        st.success(f"📂 데이터 {len(df)}개 로드 완료")
+    except:
+        st.error("엑셀 파일 읽기 실패")
         st.stop()
 
-    with st.container():
+    # 가격 설정 (기본값을 100원으로 낮춤 -> 멍청함 방지)
+    with st.expander("💰 가격 필터 설정 (필요시 변경)", expanded=True):
         c1, c2 = st.columns(2)
-        with c1: min_val = st.number_input("최소 가격", value=1000, step=100)
-        with c2: max_val = st.number_input("최대 가격", value=0, step=1000)
+        with c1: 
+            min_val = st.number_input("최소 가격 (원)", value=100, step=100, help="이 가격보다 싼 건 무시합니다.")
+        with c2: 
+            max_val = st.number_input("최대 가격 (원)", value=0, step=10000)
 
+    # 컬럼 매핑
     cols = list(df.columns)
     c1, c2, c3, c4 = st.columns(4)
     with c1: name_col = st.selectbox("상품명", cols, index=0)
     with c2: spec_col = st.selectbox("규격", cols, index=1 if len(cols)>1 else 0)
-    with c3: maker_col = st.selectbox("제조사", ["없음"] + cols)
-    with c4: model_col = st.selectbox("모델명", ["없음"] + cols)
+    with c3: maker_col = st.selectbox("제조사 (선택)", ["없음"] + cols)
+    with c4: model_col = st.selectbox("모델명 (선택)", ["없음"] + cols)
         
     cols_map = {'name': name_col, 'spec': spec_col, 
-                'maker': maker_col if maker_col != "없음" else "없음",
-                'model': model_col if model_col != "없음" else "없음"}
+                'maker': maker_col, 'model': model_col}
 
-    # =========================================================
-    # [수정됨] 실행 로그를 보여주는 공간 (Expander)
-    # =========================================================
-    log_expander = st.expander("📝 실시간 실행 로그 (클릭해서 열어보세요)", expanded=True)
-    log_area = log_expander.empty()
-    
-    if st.button("🔍 검색 시작 (Click)", type="primary"):
-        st.write("🚀 시스템: 검색 시작 버튼이 눌렸습니다.")
+    # 실행 버튼
+    if st.button("🚀 빠른 검색 시작", type="primary"):
         
-        try:
-            # 1. 컬럼 생성
-            df['네이버상품명'] = ""
-            df['최저가'] = 0
-            df['링크'] = ""
-            df['성공키워드'] = ""
+        # 결과 컬럼 생성
+        df['네이버상품명'] = ""
+        df['최저가'] = 0
+        df['링크'] = ""
+        df['성공키워드'] = ""
+        
+        # 진행바
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        total = len(df)
+        
+        for i, row in df.iterrows():
+            res = smart_search_logic(row, cols_map, min_val, max_val)
             
-            st.write("✅ 시스템: 결과 저장용 컬럼 생성 완료. 반복문 진입합니다.")
+            # 값 입력 (loc 사용)
+            df.loc[i, '네이버상품명'] = res['title']
+            df.loc[i, '최저가'] = res['price']
+            df.loc[i, '링크'] = res['link']
+            df.loc[i, '성공키워드'] = res['used_keyword']
             
-            progress_bar = st.progress(0)
-            status_txt = st.empty()
-            total = len(df)
+            # 진행바 업데이트 (텍스트 로그 최소화)
+            progress_bar.progress((i + 1) / total)
+            status_text.text(f"검색 중... {i+1}/{total}")
             
-            for i, row in df.iterrows():
-                # 로그 출력
-                log_area.text(f"▶ [{i+1}/{total}] '{row[name_col]}' 검색 시도 중...")
-                
-                # 검색 실행 (timeout 적용됨)
-                res = smart_search_logic(row, cols_map, min_val, max_val, log_area)
-                
-                # 결과 기록
-                df.loc[i, '네이버상품명'] = str(res['title'])
-                df.loc[i, '최저가'] = int(res['price'])
-                df.loc[i, '링크'] = str(res['link'])
-                df.loc[i, '성공키워드'] = str(res.get('used_keyword', ''))
-                
-                # 진행률 업데이트
-                progress_bar.progress((i + 1) / total)
-                status_txt.text(f"✅ [{i+1}/{total}] 완료 (가격: {res['price']}원)")
-                
-                # [중요] 너무 빠르면 차단되므로 0.2초 대기
-                time.sleep(0.2)
-                
-            st.success("🎉 모든 검색이 완료되었습니다!")
-            st.dataframe(df)
+            # 딜레이 최소화 (0.05초)
+            time.sleep(0.05)
             
-            # 다운로드 버튼
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False)
-            st.download_button("📥 결과 엑셀 다운로드", output.getvalue(), "검색결과.xlsx")
-            
-        except Exception as e:
-            st.error("⛔ 치명적인 오류 발생!")
-            st.error(f"에러 내용: {e}")
-            # 에러 위치 상세 출력
-            st.code(traceback.format_exc())
-
+        status_text.success("✅ 완료!")
+        st.dataframe(df)
+        
+        # 다운로드
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+        st.download_button("📥 결과 다운로드", output.getvalue(), "빠른검색결과.xlsx")
